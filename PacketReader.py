@@ -37,7 +37,6 @@ class PacketReader:
         self.totGen = IdGenerator()
 
     def nextPacket(self):
-
         """
         Description: 生成下一个数据包
         Input: None
@@ -52,25 +51,25 @@ class PacketReader:
             self.totGen.nextId()
 
             # 捕获数据包的时间戳高位,精确到秒
-            timeHigh = self.pcapData[self.pcapPtr : self.pcapPtr + 4]
+            timeHigh = self.pcapData[self.pcapPtr:self.pcapPtr + 4]
             timeHigh = struct.unpack(self.typeI, timeHigh)[0]
 
             # 捕获数据包的时间戳低位,精确到微秒(1s=10^6us)
-            timeLow = self.pcapData[self.pcapPtr + 4 : self.pcapPtr + 8]
+            timeLow = self.pcapData[self.pcapPtr + 4:self.pcapPtr + 8]
             timeLow = struct.unpack(self.typeI, timeLow)[0]
 
             # 时间戳
             timeStamp = 1000000 * timeHigh + timeLow
 
             # 数据包的长度,用于计算下一个数据包的位置
-            caplen = self.pcapData[self.pcapPtr + 8 : self.pcapPtr + 12]
+            caplen = self.pcapData[self.pcapPtr + 8:self.pcapPtr + 12]
             caplen = struct.unpack(self.typeI, caplen)[0]
 
             # 指针向后移动16位
             self.pcapPtr += 16
 
             # 链路层数据帧
-            packetData = self.pcapData[self.pcapPtr : self.pcapPtr + caplen]
+            packetData = self.pcapData[self.pcapPtr:self.pcapPtr + caplen]
 
             # 指针向后移动caplen位
             self.pcapPtr += caplen
@@ -79,8 +78,20 @@ class PacketReader:
                 # 获取数据包信息
                 packetInfo = self.getIpv4Info(packetData, timeStamp)
                 break
+            elif self.isIpv6TCP(packetData):
+                packetInfo = self.getIpv6Info(packetData, timeStamp)
+                break
 
         return packetInfo
+
+    def isIpv6TCP(self, packetData):
+        # Check if the packet is IPv6 based on the EtherType field
+        if packetData[12:14] != b'\x86\xdd':
+            return False
+        # Check if the Next Header (which indicates the protocol in IPv6) is TCP (value 6)
+        if packetData[20] != 6:
+            return False
+        return True
 
     def isIpv4TCP(self, packetData):
         # 不是IPv4协议
@@ -91,7 +102,6 @@ class PacketReader:
         return True
 
     def getIpv4Info(self, packetData, timeStamp):
-
         """
         Description: 获取IpV4协议下的数据包信息
         Input: 链路层数据帧, 时间戳
@@ -101,7 +111,7 @@ class PacketReader:
         # IP数据包长度
         ipLen = struct.unpack(self.typeH, packetData[16:18])[0]
         # IP数据包内容
-        packetIp = packetData[14 : 14 + ipLen]
+        packetIp = packetData[14:14 + ipLen]
         # IP数据包头长度
         ipHeadLen = (packetIp[0] & 0x0F) << 2
         # 传输层协议(TCP:6 UDP:17)
@@ -135,6 +145,46 @@ class PacketReader:
             srcPort=srcPort,
             dstPort=dstPort,
             protocol=protocol,
+            timeStamp=timeStamp,
+            headBytes=tcpHeadLen,
+            payloadBytes=payloadBytes,
+            flags=flags,
+            TCPWindow=windowSize,
+            payload=payload,
+        )
+
+        return packetInfo
+
+    def getIpv6Info(self, packetData, timeStamp):
+
+        # Fixed IPv6 header size
+        ipv6_header_size = 40
+
+        # Extract the IPv6 header
+        packetIpv6 = packetData[14:14 + ipv6_header_size]
+
+        # Extract the source and destination IPv6 addresses
+        srcIP = ":".join(format(b, "02x") for b in packetIpv6[8:24])
+        dstIP = ":".join(format(b, "02x") for b in packetIpv6[24:40])
+
+        # TCP segment starts after the IPv6 header
+        packetTCP = packetData[14 + ipv6_header_size:]
+        # The rest is similar to the IPv4 TCP processing
+        srcPort = struct.unpack(self.typeH, packetTCP[0:2])[0]
+        dstPort = struct.unpack(self.typeH, packetTCP[2:4])[0]
+        tcpHeadLen = (packetTCP[12] & 0xF0) >> 2
+        flags = packetTCP[13]
+        windowSize = struct.unpack(self.typeH, packetTCP[14:16])[0]
+        payload = packetTCP[tcpHeadLen:]
+        payloadBytes = len(payload)
+
+        packetInfo = BasicPacketInfo(
+            generator=self.generator,
+            srcIP=srcIP,
+            dstIP=dstIP,
+            srcPort=srcPort,
+            dstPort=dstPort,
+            protocol=6,  # TCP protocol number
             timeStamp=timeStamp,
             headBytes=tcpHeadLen,
             payloadBytes=payloadBytes,
